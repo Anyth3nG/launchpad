@@ -29,8 +29,27 @@ docker run --env-file .env -p 8000:8000 launchpad-backend
 |--------|------|------|-------------|
 | GET | /health | None | Service health check |
 | GET | /docker-status | None* | List all running containers |
+| POST | /build-service | None* | Clone a GitHub repo and build a Docker image |
 
 \* Auth not yet implemented — will require bearer token in a future ticket.
+
+## Build service
+
+`POST /build-service` accepts a JSON body:
+
+```json
+{ "repo_url": "https://github.com/owner/repo" }
+```
+
+The endpoint:
+1. Validates the URL is a GitHub URL
+2. Checks the repository exists via the GitHub API
+3. Clones the repo into `backend/tmp/<owner>-<repo>/`
+4. Verifies a `Dockerfile` exists at the repo root
+5. Builds and tags the image as `launchpad/<owner>-<repo>:latest`
+6. Deletes the temporary clone regardless of build outcome
+
+The `tmp/` directory is git-ignored and never committed.
 
 ## Docker socket access
 
