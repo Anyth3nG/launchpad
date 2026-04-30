@@ -28,3 +28,22 @@ docker run --env-file .env -p 8000:8000 launchpad-backend
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | /health | None | Service health check |
+| GET | /docker-status | None* | List all running containers |
+
+\* Auth not yet implemented — will require bearer token in a future ticket.
+
+## Docker socket access
+
+`/docker-status` talks to the Docker daemon via the Docker SDK. When running
+locally the SDK connects through `/var/run/docker.sock` automatically.
+
+When running inside Docker you must bind-mount the socket:
+
+```bash
+docker run --env-file .env -p 8000:8000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  launchpad-backend
+```
+
+The socket is never exposed publicly — only the backend process has access to it,
+per the security architecture in `docs/decisions/002-security-architecture.md`.
