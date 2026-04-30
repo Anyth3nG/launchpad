@@ -143,7 +143,7 @@ async def build_service(request: BuildRequest) -> JSONResponse:
                 content={"error": f"No Dockerfile found in '{owner}/{repo_name}'"},
             )
 
-        image_tag = f"launchpad/{owner}-{repo_name.lower()}:latest"
+        image_tag = f"launchpad/{owner.lower()}-{repo_name.lower()}:latest"
 
         try:
             docker_client = docker.from_env()
@@ -162,10 +162,15 @@ async def build_service(request: BuildRequest) -> JSONResponse:
                 status_code=500,
                 content={"error": "Docker build failed", "details": build_log},
             )
-        except docker.errors.DockerException:
+        except docker.errors.APIError as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Docker API error: {e.explanation}"},
+            )
+        except docker.errors.DockerException as e:
             return JSONResponse(
                 status_code=503,
-                content={"error": "Docker daemon is not reachable"},
+                content={"error": f"Docker daemon is not reachable: {str(e)}"},
             )
     finally:
         shutil.rmtree(clone_path, ignore_errors=True)
