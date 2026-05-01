@@ -1,6 +1,8 @@
 """Entry point for the Launchpad FastAPI backend."""
 
 import shutil
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -9,13 +11,96 @@ import docker.errors
 import git
 import git.exc
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 app = FastAPI(title="Launchpad", version="0.1.0")
 
 TMP_DIR = Path(__file__).parent.parent / "tmp"
+
+# ---------------------------------------------------------------------------
+# Rate limiting config
+# ---------------------------------------------------------------------------
+
+_WINDOW_SECONDS = 60
+_GENERAL_LIMIT = 60       # requests per minute for general endpoints
+_DEPLOY_LIMIT = 5         # requests per minute for deployment endpoints
+_AUTH_LOCKOUT_LIMIT = 10  # consecutive auth failures before lockout
+
+_DEPLOY_ENDPOINTS = {"/build-service", "/container-deployment"}
+_EXEMPT_ENDPOINTS = {"/health"}
+
+# In-memory sliding window state (process-local, resets on restart)
+# Keyed by (ip, tier) so deployment and general windows are tracked independently
+_request_log: dict[tuple[str, str], deque] = defaultdict(deque)
+_auth_failures: dict[str, int] = defaultdict(int)  # ip -> consecutive 401 count
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Enforce per-IP rate limits and auth failure lockout on all endpoints.
+
+    General endpoints are limited to 60 requests/minute. Deployment endpoints
+    (/build-service, /container-deployment) are limited to 5 requests/minute.
+    /health is exempt. IPs are locked out after 10 consecutive auth failures
+    (placeholder — activates automatically once bearer token auth is in place
+    and the auth layer starts returning 401 responses).
+    """
+
+    async def dispatch(self, request: Request, call_next) -> JSONResponse:
+        """Check rate limits before passing the request, track auth failures after."""
+        ip = _get_client_ip(request)
+        path = request.url.path
+
+        if path in _EXEMPT_ENDPOINTS:
+            return await call_next(request)
+
+        # Auth failure lockout (placeholder until bearer token auth is implemented)
+        if _auth_failures[ip] >= _AUTH_LOCKOUT_LIMIT:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Too many authentication failures. IP temporarily locked out.",
+                },
+            )
+
+        # Sliding window rate limit — keyed by (ip, tier) to keep windows independent
+        tier = "deploy" if path in _DEPLOY_ENDPOINTS else "general"
+        limit = _DEPLOY_LIMIT if tier == "deploy" else _GENERAL_LIMIT
+        now = time.time()
+        window_start = now - _WINDOW_SECONDS
+        timestamps = _request_log[(ip, tier)]
+
+        while timestamps and timestamps[0] < window_start:
+            timestamps.popleft()
+
+        if len(timestamps) >= limit:
+            retry_after = int(_WINDOW_SECONDS - (now - timestamps[0])) + 1
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Rate limit exceeded",
+                    "limit": limit,
+                    "window_seconds": _WINDOW_SECONDS,
+                    "retry_after_seconds": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        timestamps.append(now)
+        response = await call_next(request)
+
+        # Track consecutive auth failures; reset on any success
+        if response.status_code == 401:
+            _auth_failures[ip] += 1
+        elif response.status_code < 400:
+            _auth_failures[ip] = 0
+
+        return response
+
+
+app.add_middleware(RateLimitMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +484,14 @@ async def remove_service(request: RemoveRequest) -> JSONResponse:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _get_client_ip(request: Request) -> str:
+    """Return the real client IP, preferring X-Forwarded-For set by Nginx."""
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
 
 def _resolve_container(client: docker.DockerClient, identifier: str):
     """Find a container by ID, name, or repo-derived image tag.
