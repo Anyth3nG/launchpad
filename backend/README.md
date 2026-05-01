@@ -30,6 +30,7 @@ docker run --env-file .env -p 8000:8000 launchpad-backend
 | GET | /health | None | Service health check |
 | GET | /docker-status | None* | List all running containers |
 | POST | /build-service | None* | Clone a GitHub repo and build a Docker image |
+| POST | /container-deployment | None* | Deploy a built image as a resource-limited container |
 
 \* Auth not yet implemented — will require bearer token in a future ticket.
 
@@ -50,6 +51,45 @@ The endpoint:
 6. Deletes the temporary clone regardless of build outcome
 
 The `tmp/` directory is git-ignored and never committed.
+
+## Run service
+
+`POST /container-deployment` accepts a JSON body:
+
+```json
+{ "repo": "owner/repo" }
+```
+
+Both `"owner/repo"` and `"owner-repo"` formats are accepted.
+
+The endpoint:
+1. Normalises the repo identifier and looks for a matching `launchpad/<owner>-<repo>:latest` image
+2. Returns 404 with a list of available built images if no match is found
+3. Starts the container with enforced resource limits (see table below)
+4. Uses `publish_all_ports=True` so Docker auto-assigns an available host port for every `EXPOSE`'d container port
+5. Returns `container_id`, `container_name`, and `ports` on success
+
+### Resource limits
+
+| Resource | Limit |
+|----------|-------|
+| Memory | 512 MB |
+| CPU | 0.5 cores |
+| Privileged mode | Never |
+| Network | Bridge (default) |
+
+### Example response
+
+```json
+{
+  "message": "Container deployed successfully",
+  "container_id": "a3f9c2d1b",
+  "container_name": "romantic_turing",
+  "ports": ["32768:8080/tcp"]
+}
+```
+
+If the image has no `EXPOSE` directives, `ports` will be `"no ports exposed by this image"`.
 
 ## Docker socket access
 

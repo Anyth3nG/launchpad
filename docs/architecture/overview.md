@@ -33,25 +33,36 @@ subdomain or path. Also terminates TLS when configured.
 A terminal client for the FastAPI backend. Allows deployments, 
 status checks, and log viewing without the dashboard.
 
-## Request Flow — New Deployment
-```bash
-User/GitHub Webhook
-│
-▼
-Nginx (proxy)
+## Request Flow
+
+Build and run are intentionally separate API calls. A repo must be built before it can be deployed.
+
+### Step 1 — Build (`POST /build-service`)
+```
+User
 │
 ▼
 FastAPI Backend
 │
-├──► PostgreSQL (create deployment record)
+├──► GitHub API (verify repo exists)
 │
-├──► Docker (build image from repo)
+├──► Git (clone repo to tmp/)
 │
-├──► Docker (run container)
+├──► Docker (build image → launchpad/<owner>-<repo>:latest)
 │
-├──► PostgreSQL (update status, store logs)
+└──► tmp/ clone deleted
+```
+
+### Step 2 — Deploy (`POST /container-deployment`)
+```
+User
 │
-└──► Nginx config (register new route)
+▼
+FastAPI Backend
+│
+├──► Docker (find matching launchpad/ image)
+│
+└──► Docker (run container — 512 MB / 0.5 CPU / auto-assigned port)
 ```
 ## Security boundaries
 
