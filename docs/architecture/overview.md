@@ -34,7 +34,7 @@ A terminal client for the FastAPI backend. Allows deployments,
 status checks, and log viewing without the dashboard.
 
 ## Request Flow — New Deployment
-
+```bash
 User/GitHub Webhook
 │
 ▼
@@ -52,7 +52,7 @@ FastAPI Backend
 ├──► PostgreSQL (update status, store logs)
 │
 └──► Nginx config (register new route)
-
+```
 ## Security boundaries
 
 See [../threat-model.md](../threat-model.md)
