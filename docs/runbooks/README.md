@@ -64,7 +64,31 @@ curl http://localhost:8000/docker-status
 ## Stop a running container
 
 ```bash
-docker stop <container_name_or_id>
+curl -X POST http://localhost:8000/stop-service \
+  -H "Content-Type: application/json" \
+  -d '{"identifier": "owner/repo"}'
+```
+
+The `identifier` can be a container ID, container name, or repo name. Returns 409 if the container is already stopped.
+
+---
+
+## Remove a container
+
+The container must be stopped first:
+
+```bash
+curl -X POST http://localhost:8000/remove-service \
+  -H "Content-Type: application/json" \
+  -d '{"identifier": "owner/repo"}'
+```
+
+To stop and remove in one step, pass `force=true`:
+
+```bash
+curl -X POST http://localhost:8000/remove-service \
+  -H "Content-Type: application/json" \
+  -d '{"identifier": "owner/repo", "force": true}'
 ```
 
 ---
