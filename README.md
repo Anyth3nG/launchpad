@@ -6,9 +6,10 @@ like Railway and Render work under the hood.
 
 ## What it does
 
-- Accepts a GitHub repository URL and builds it as a Docker container
-- Deploys the container and assigns it a local URL via reverse proxy
-- Monitors running services with health checks and restart policies
+- Accepts a GitHub repository URL and builds it as a Docker image
+- Deploys built images as containers with enforced CPU and memory resource limits
+- Auto-assigns host ports so deployed services are immediately reachable
+- Monitors running containers and surfaces status via a REST API
 - Provides a React dashboard for managing deployments and viewing logs
 - Supports GitHub webhook integration for automatic deploys on push
 - Includes a CLI tool for terminal-based deployments

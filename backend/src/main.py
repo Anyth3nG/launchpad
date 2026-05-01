@@ -28,6 +28,12 @@ class BuildRequest(BaseModel):
     repo_url: str
 
 
+class DeployRequest(BaseModel):
+    """Payload for the /container-deployment endpoint."""
+
+    repo: str  # Accepts 'owner/repo' or 'owner-repo'
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -181,6 +187,84 @@ async def build_service(request: BuildRequest) -> JSONResponse:
             "message": "Image built successfully",
             "image": image_tag,
             "repo": f"{owner}/{repo_name}",
+        },
+    )
+
+
+@app.post("/container-deployment", tags=["run"])
+async def container_deployment(request: DeployRequest) -> JSONResponse:
+    """Deploy a pre-built image as a container with enforced resource limits.
+
+    Accepts a repo identifier ('owner/repo' or 'owner-repo') and looks for a
+    matching image built by /build-service. If found, starts the container with
+    512 MB memory and 0.5 CPU limits, publishes all exposed ports to random
+    available host ports, and returns the container ID, name, and port mappings.
+    Returns 404 if no matching image exists.
+    """
+    repo_key = request.repo.lower().replace("/", "-").strip()
+    expected_tag = f"launchpad/{repo_key}:latest"
+
+    try:
+        docker_client = docker.from_env()
+        all_images = docker_client.images.list()
+    except docker.errors.DockerException:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Docker daemon is not reachable"},
+        )
+
+    matched = any(expected_tag in (img.tags or []) for img in all_images)
+
+    if not matched:
+        available = [
+            tag
+            for img in all_images
+            for tag in (img.tags or [])
+            if tag.startswith("launchpad/")
+        ]
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": f"No built image found for '{request.repo}'. "
+                         "Build it first using /build-service.",
+                "available_images": available,
+            },
+        )
+
+    try:
+        container = docker_client.containers.run(
+            image=expected_tag,
+            detach=True,
+            publish_all_ports=True,
+            mem_limit="512m",
+            nano_cpus=500_000_000,  # 0.5 CPU cores
+        )
+    except docker.errors.ImageNotFound:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Image '{expected_tag}' not found"},
+        )
+    except docker.errors.APIError as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Docker failed to start the container", "details": e.explanation},
+        )
+    except docker.errors.DockerException as e:
+        return JSONResponse(
+            status_code=503,
+            content={"error": f"Docker daemon is not reachable: {str(e)}"},
+        )
+
+    container.reload()
+    assigned_ports = _format_ports(container.ports)
+
+    return JSONResponse(
+        status_code=201,
+        content={
+            "message": "Container deployed successfully",
+            "container_id": container.short_id,
+            "container_name": container.name,
+            "ports": assigned_ports if assigned_ports else "no ports exposed by this image",
         },
     )
 
