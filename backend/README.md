@@ -135,6 +135,34 @@ The endpoint:
 }
 ```
 
+## Rate limiting
+
+All endpoints are rate limited per client IP via `RateLimitMiddleware`. `/health` is exempt.
+
+| Tier | Endpoints | Limit |
+|------|-----------|-------|
+| Deployment | `/build-service`, `/container-deployment` | 5 requests/minute |
+| General | All other endpoints | 60 requests/minute |
+
+The two tiers have independent windows — exhausting the general limit does not affect the deployment budget and vice versa.
+
+When a limit is exceeded the response is `429 Too Many Requests`:
+
+```json
+{
+  "error": "Rate limit exceeded",
+  "limit": 5,
+  "window_seconds": 60,
+  "retry_after_seconds": 42
+}
+```
+
+A `Retry-After` header is also set on every 429 response.
+
+### Auth failure lockout
+
+The middleware tracks consecutive `401` responses per IP. After 10 consecutive failures the IP is locked out and receives `429` until a successful request resets the counter. This is a placeholder — it activates automatically once bearer token auth is implemented and the auth layer starts returning `401` responses.
+
 ## Docker socket access
 
 `/docker-status` talks to the Docker daemon via the Docker SDK. When running
