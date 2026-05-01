@@ -31,6 +31,8 @@ docker run --env-file .env -p 8000:8000 launchpad-backend
 | GET | /docker-status | None* | List all running containers |
 | POST | /build-service | None* | Clone a GitHub repo and build a Docker image |
 | POST | /container-deployment | None* | Deploy a built image as a resource-limited container |
+| POST | /stop-service | None* | Stop a running container |
+| POST | /remove-service | None* | Remove a stopped container (or force stop + remove) |
 
 \* Auth not yet implemented — will require bearer token in a future ticket.
 
@@ -90,6 +92,48 @@ The endpoint:
 ```
 
 If the image has no `EXPOSE` directives, `ports` will be `"no ports exposed by this image"`.
+
+## Stop service
+
+`POST /stop-service` accepts a JSON body:
+
+```json
+{ "identifier": "owner/repo" }
+```
+
+The `identifier` can be a container ID, container name, or repo name (`owner/repo` or `owner-repo`).
+
+The endpoint:
+1. Tries a direct Docker lookup by ID or name first
+2. Falls back to matching against the `launchpad/<owner>-<repo>:latest` image tag
+3. Returns 409 if the container is already stopped
+4. Returns 404 if no container matches the identifier
+
+## Remove service
+
+`POST /remove-service` accepts a JSON body:
+
+```json
+{ "identifier": "owner/repo", "force": false }
+```
+
+`force` defaults to `false`. The same identifier formats as `/stop-service` are accepted.
+
+| State | `force=false` | `force=true` |
+|---|---|---|
+| Container running | 409 — stop it first | Stops then removes |
+| Container stopped | Removes | Removes |
+| Not found | 404 | 404 |
+
+### Example 409 response (running, no force)
+
+```json
+{
+  "error": "Container 'romantic_turing' is still running. Stop it first using /stop-service, or pass force=true to stop and remove in one step.",
+  "container_id": "a3f9c2d1b",
+  "container_name": "romantic_turing"
+}
+```
 
 ## Docker socket access
 

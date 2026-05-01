@@ -34,6 +34,19 @@ class DeployRequest(BaseModel):
     repo: str  # Accepts 'owner/repo' or 'owner-repo'
 
 
+class StopRequest(BaseModel):
+    """Payload for the /stop-service endpoint."""
+
+    identifier: str  # Container ID, container name, repo name, or image tag
+
+
+class RemoveRequest(BaseModel):
+    """Payload for the /remove-service endpoint."""
+
+    identifier: str  # Container ID, container name, repo name, or image tag
+    force: bool = False  # Stop the container first if it is still running
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -269,9 +282,151 @@ async def container_deployment(request: DeployRequest) -> JSONResponse:
     )
 
 
+@app.post("/stop-service", tags=["run"])
+async def stop_service(request: StopRequest) -> JSONResponse:
+    """Stop a running container identified by container ID, name, or repo name.
+
+    Looks up the container using the identifier (tried as a direct Docker ID/name
+    first, then as a repo-derived image tag). Returns 409 if the container is
+    already stopped, and 404 if no matching container is found.
+    """
+    try:
+        docker_client = docker.from_env()
+    except docker.errors.DockerException:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Docker daemon is not reachable"},
+        )
+
+    container = _resolve_container(docker_client, request.identifier)
+
+    if container is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No container found for '{request.identifier}'"},
+        )
+
+    if container.status != "running":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": f"Container '{container.name}' is not running (status: {container.status})",
+                "container_id": container.short_id,
+                "container_name": container.name,
+            },
+        )
+
+    try:
+        container.stop()
+    except docker.errors.APIError as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to stop container", "details": e.explanation},
+        )
+
+    return JSONResponse(
+        content={
+            "message": "Container stopped successfully",
+            "container_id": container.short_id,
+            "container_name": container.name,
+        },
+    )
+
+
+@app.post("/remove-service", tags=["run"])
+async def remove_service(request: RemoveRequest) -> JSONResponse:
+    """Remove a container identified by container ID, name, or repo name.
+
+    If the container is still running and force=false, returns 409 with a prompt
+    to stop it first. If force=true, stops the container before removing it.
+    Returns 404 if no matching container is found.
+    """
+    try:
+        docker_client = docker.from_env()
+    except docker.errors.DockerException:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Docker daemon is not reachable"},
+        )
+
+    container = _resolve_container(docker_client, request.identifier)
+
+    if container is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No container found for '{request.identifier}'"},
+        )
+
+    if container.status == "running":
+        if not request.force:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": (
+                        f"Container '{container.name}' is still running. "
+                        "Stop it first using /stop-service, or pass force=true to stop and remove in one step."
+                    ),
+                    "container_id": container.short_id,
+                    "container_name": container.name,
+                },
+            )
+
+        try:
+            container.stop()
+        except docker.errors.APIError as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to stop container before removal", "details": e.explanation},
+            )
+
+    try:
+        container.remove()
+    except docker.errors.APIError as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to remove container", "details": e.explanation},
+        )
+
+    return JSONResponse(
+        content={
+            "message": "Container removed successfully",
+            "container_id": container.short_id,
+            "container_name": container.name,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _resolve_container(client: docker.DockerClient, identifier: str):
+    """Find a container by ID, name, or repo-derived image tag.
+
+    Tries a direct Docker lookup first (handles full/short IDs and names).
+    Falls back to treating the identifier as a repo name and searching all
+    containers (including stopped ones) for a matching launchpad/ image tag.
+    Returns the Container object, or None if nothing matched.
+    """
+    try:
+        return client.containers.get(identifier)
+    except docker.errors.NotFound:
+        pass
+
+    repo_key = identifier.lower().replace("/", "-").strip()
+    image_tag = f"launchpad/{repo_key}:latest"
+
+    for container in client.containers.list(all=True):
+        try:
+            tags = container.image.tags or []
+        except docker.errors.ImageNotFound:
+            # Image was deleted after the container was created; skip safely
+            continue
+        if image_tag in tags:
+            return container
+
+    return None
+
 
 def _format_ports(ports: dict) -> list[str]:
     """Convert Docker SDK port dict into readable 'host:container/proto' strings."""
