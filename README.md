@@ -10,6 +10,8 @@ like Railway and Render work under the hood.
 - Deploys built images as containers with enforced CPU and memory resource limits
 - Auto-assigns host ports so deployed services are immediately reachable
 - Monitors running containers and surfaces status via a REST API
+- Secures all API endpoints with bearer token authentication
+- Rate limits requests per IP with separate budgets for general and deployment endpoints
 - Provides a React dashboard for managing deployments and viewing logs
 - Supports GitHub webhook integration for automatic deploys on push
 - Includes a CLI tool for terminal-based deployments
@@ -29,7 +31,11 @@ See [docs/architecture/overview.md](docs/architecture/overview.md)
 
 ## Project status
 
-🚧 In active development — Phase 0 (Foundation)
+**Phase 0 complete.** Project scaffolding, architecture decisions, threat model, FastAPI foundation with `/health` endpoint, and Docker SDK integration with `/docker-status`.
+
+**Phase 1 complete.** Docker image builds from GitHub repos, container deployment with CPU and memory resource limits, stop and remove endpoints, per-IP rate limiting with separate tiers for general and deployment endpoints, and bearer token authentication with auth failure lockout.
+
+🚧 In active development — Phase 2
 
 ## Running locally
 

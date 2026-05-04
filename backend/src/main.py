@@ -1,5 +1,6 @@
 """Entry point for the Launchpad FastAPI backend."""
 
+import os
 import shutil
 import time
 from collections import defaultdict, deque
@@ -11,10 +12,13 @@ import docker.errors
 import git
 import git.exc
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 app = FastAPI(title="Launchpad", version="0.1.0")
 
@@ -25,9 +29,10 @@ TMP_DIR = Path(__file__).parent.parent / "tmp"
 # ---------------------------------------------------------------------------
 
 _WINDOW_SECONDS = 60
-_GENERAL_LIMIT = 60       # requests per minute for general endpoints
-_DEPLOY_LIMIT = 5         # requests per minute for deployment endpoints
-_AUTH_LOCKOUT_LIMIT = 10  # consecutive auth failures before lockout
+_GENERAL_LIMIT = 60        # requests per minute for general endpoints
+_DEPLOY_LIMIT = 5          # requests per minute for deployment endpoints
+_AUTH_LOCKOUT_LIMIT = 10   # consecutive auth failures before lockout
+_AUTH_LOCKOUT_SECONDS = 900  # lockout duration: 15 minutes
 
 _DEPLOY_ENDPOINTS = {"/build-service", "/container-deployment"}
 _EXEMPT_ENDPOINTS = {"/health"}
@@ -35,7 +40,8 @@ _EXEMPT_ENDPOINTS = {"/health"}
 # In-memory sliding window state (process-local, resets on restart)
 # Keyed by (ip, tier) so deployment and general windows are tracked independently
 _request_log: dict[tuple[str, str], deque] = defaultdict(deque)
-_auth_failures: dict[str, int] = defaultdict(int)  # ip -> consecutive 401 count
+_auth_failures: dict[str, int] = defaultdict(int)   # ip -> consecutive 401 count
+_lockout_start: dict[str, float] = {}                # ip -> timestamp when lockout began
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -43,9 +49,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     General endpoints are limited to 60 requests/minute. Deployment endpoints
     (/build-service, /container-deployment) are limited to 5 requests/minute.
-    /health is exempt. IPs are locked out after 10 consecutive auth failures
-    (placeholder — activates automatically once bearer token auth is in place
-    and the auth layer starts returning 401 responses).
+    /health is exempt. IPs are locked out after 10 consecutive auth failures.
     """
 
     async def dispatch(self, request: Request, call_next) -> JSONResponse:
@@ -56,14 +60,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path in _EXEMPT_ENDPOINTS:
             return await call_next(request)
 
-        # Auth failure lockout (placeholder until bearer token auth is implemented)
+        # Auth failure lockout — expires after 15 minutes automatically
         if _auth_failures[ip] >= _AUTH_LOCKOUT_LIMIT:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "error": "Too many authentication failures. IP temporarily locked out.",
-                },
-            )
+            lockout_age = time.time() - _lockout_start.get(ip, 0)
+            if lockout_age < _AUTH_LOCKOUT_SECONDS:
+                retry_after = int(_AUTH_LOCKOUT_SECONDS - lockout_age) + 1
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": "Too many authentication failures. IP temporarily locked out.",
+                        "retry_after_seconds": retry_after,
+                    },
+                    headers={"Retry-After": str(retry_after)},
+                )
+            # Lockout expired — reset and allow the request through
+            _auth_failures[ip] = 0
+            _lockout_start.pop(ip, None)
 
         # Sliding window rate limit — keyed by (ip, tier) to keep windows independent
         tier = "deploy" if path in _DEPLOY_ENDPOINTS else "general"
@@ -91,15 +103,68 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         timestamps.append(now)
         response = await call_next(request)
 
-        # Track consecutive auth failures; reset on any success
+        # Track consecutive auth failures; record lockout start when threshold is first hit
         if response.status_code == 401:
             _auth_failures[ip] += 1
+            if _auth_failures[ip] >= _AUTH_LOCKOUT_LIMIT and ip not in _lockout_start:
+                _lockout_start[ip] = time.time()
         elif response.status_code < 400:
             _auth_failures[ip] = 0
+            _lockout_start.pop(ip, None)
 
         return response
 
 
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Validate the Bearer token on every request except /health.
+
+    Reads TOKEN_BEARER from the environment at startup. Requests without an
+    Authorization header return 401. Requests with a token that does not match
+    return 403. /health is exempt and requires no token.
+    """
+
+    def __init__(self, app):
+        """Load the expected bearer token from the environment."""
+        super().__init__(app)
+        self._token = os.environ.get("TOKEN_BEARER", "")
+        if not self._token:
+            raise RuntimeError("TOKEN_BEARER is not set in the environment")
+
+    async def dispatch(self, request: Request, call_next) -> JSONResponse:
+        """Check the Authorization header before passing the request."""
+        if request.url.path in _EXEMPT_ENDPOINTS:
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+
+        if not auth_header:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Missing Authorization header. Expected: Bearer <token>"},
+            )
+
+        parts = auth_header.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Malformed Authorization header. Expected: Bearer <token>"},
+            )
+
+        if parts[1] != self._token:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Invalid token"},
+            )
+
+        return await call_next(request)
+
+
+# Middleware is executed in reverse registration order.
+# AuthMiddleware is added first (inner), RateLimitMiddleware second (outer).
+# Execution order: RateLimit → Auth → endpoint.
+# This means RateLimitMiddleware sees the 401/403 responses from AuthMiddleware
+# and can correctly count them toward the auth failure lockout.
+app.add_middleware(AuthMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
 
