@@ -23,18 +23,33 @@ docker build -t launchpad-backend .
 docker run --env-file .env -p 8000:8000 launchpad-backend
 ```
 
+## Authentication
+
+All endpoints except `/health` require a bearer token:
+
+```
+Authorization: Bearer <token>
+```
+
+The token is set in `backend/.env` as `TOKEN_BEARER`. The server refuses to start if this variable is missing.
+
+| Scenario | Response |
+|---|---|
+| No `Authorization` header | 401 |
+| Malformed header (not `Bearer <token>`) | 401 |
+| Wrong token | 403 |
+| Correct token | Request proceeds |
+
 ## Endpoints
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | /health | None | Service health check |
-| GET | /docker-status | None* | List all running containers |
-| POST | /build-service | None* | Clone a GitHub repo and build a Docker image |
-| POST | /container-deployment | None* | Deploy a built image as a resource-limited container |
-| POST | /stop-service | None* | Stop a running container |
-| POST | /remove-service | None* | Remove a stopped container (or force stop + remove) |
-
-\* Auth not yet implemented — will require bearer token in a future ticket.
+| GET | /docker-status | Bearer | List all running containers |
+| POST | /build-service | Bearer | Clone a GitHub repo and build a Docker image |
+| POST | /container-deployment | Bearer | Deploy a built image as a resource-limited container |
+| POST | /stop-service | Bearer | Stop a running container |
+| POST | /remove-service | Bearer | Remove a stopped container (or force stop + remove) |
 
 ## Build service
 
@@ -161,7 +176,14 @@ A `Retry-After` header is also set on every 429 response.
 
 ### Auth failure lockout
 
-The middleware tracks consecutive `401` responses per IP. After 10 consecutive failures the IP is locked out and receives `429` until a successful request resets the counter. This is a placeholder — it activates automatically once bearer token auth is implemented and the auth layer starts returning `401` responses.
+The middleware tracks consecutive `401` responses per IP. After 10 consecutive failures the IP is locked out for 15 minutes and all requests (including those with a valid token) receive `429`. The lockout expires automatically — there is no manual reset. `/health` remains reachable during a lockout.
+
+```json
+{
+  "error": "Too many authentication failures. IP temporarily locked out.",
+  "retry_after_seconds": 900
+}
+```
 
 ## Docker socket access
 
