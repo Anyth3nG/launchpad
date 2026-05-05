@@ -10,6 +10,7 @@ like Railway and Render work under the hood.
 - Deploys built images as containers with enforced CPU and memory resource limits
 - Auto-assigns host ports so deployed services are immediately reachable
 - Monitors running containers and surfaces status via a REST API
+- Persists deployment state in PostgreSQL via SQLAlchemy
 - Secures all API endpoints with bearer token authentication
 - Rate limits requests per IP with separate budgets for general and deployment endpoints
 - Provides a React dashboard for managing deployments and viewing logs

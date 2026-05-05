@@ -23,6 +23,15 @@ docker build -t launchpad-backend .
 docker run --env-file .env -p 8000:8000 launchpad-backend
 ```
 
+## Environment variables
+
+All secrets and config live in the root `.env` (git-ignored). The server refuses to start if required variables are missing.
+
+| Variable | Required | Description |
+|---|---|---|
+| `TOKEN_BEARER` | Yes | Bearer token for API authentication |
+| `DATABASE_URL` | Yes | PostgreSQL connection string (`postgresql://user:pass@host:5432/db`) |
+
 ## Authentication
 
 All endpoints except `/health` require a bearer token:
@@ -31,7 +40,7 @@ All endpoints except `/health` require a bearer token:
 Authorization: Bearer <token>
 ```
 
-The token is set in `backend/.env` as `TOKEN_BEARER`. The server refuses to start if this variable is missing.
+The token is set in the root `.env` as `TOKEN_BEARER`. The server refuses to start if this variable is missing.
 
 | Scenario | Response |
 |---|---|
@@ -183,6 +192,32 @@ The middleware tracks consecutive `401` responses per IP. After 10 consecutive f
   "error": "Too many authentication failures. IP temporarily locked out.",
   "retry_after_seconds": 900
 }
+```
+
+## Database
+
+Launchpad uses PostgreSQL via SQLAlchemy. The connection is configured through `DATABASE_URL` in the root `.env`.
+
+### Deployment model
+
+The `deployments` table tracks every container deployment:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | Integer | Auto-increment primary key |
+| `image_name` | String | e.g. `launchpad/owner-repo:latest` |
+| `container_id` | String (unique) | Docker container ID |
+| `status` | String | `running` or `down` |
+| `repo_name` | String | e.g. `Anyth3nG/test-repo` |
+| `port` | String (nullable) | Host port mapping, e.g. `32768:8080/tcp`; null if no ports exposed |
+| `created_at` | DateTime (tz-aware) | Set automatically at insertion |
+
+### Setup
+
+Tables are created automatically on startup via `init_db()`. The database user needs `CREATE` privilege on the public schema:
+
+```sql
+GRANT CREATE ON SCHEMA public TO <your_db_user>;
 ```
 
 ## Docker socket access
