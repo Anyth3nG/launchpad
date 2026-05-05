@@ -4,3 +4,5 @@ python-dotenv==1.1.0
 docker==7.1.0
 gitpython==3.1.44
 httpx==0.28.1
+sqlalchemy==2.0.41
+psycopg2-binary==2.9.10
